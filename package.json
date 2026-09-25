@@ -1,0 +1,73 @@
+{
+  "name": "@elliottophellia/kiyosumi",
+  "version": "0.1.0",
+  "description": "Provider-agnostic long-term memory and retrieval for Oh My Pi",
+  "license": "GPL-2.0-only",
+  "author": "elliottophellia",
+  "homepage": "https://github.com/elliottophellia/kiyosumi#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elliottophellia/kiyosumi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/elliottophellia/kiyosumi/issues"
+  },
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "memory",
+    "retrieval",
+    "pglite",
+    "voyage"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "verify": "bun run typecheck && bun test && bun run build"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": ">=18.3.1 <19"
+  },
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.3.1",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  }
+}
