@@ -16,7 +16,6 @@ describe("Kiyosumi configuration", () => {
 		expect(config.rag.recall).toBe(40);
 		expect(config.rag.hybrid).toBe(true);
 		expect(config.rag.autoContext).toBe(true);
-		expect(config.rag.autoIndexProject).toBe(false);
 		expect(config.rag.embedding.apiKey).toBeUndefined();
 	});
 

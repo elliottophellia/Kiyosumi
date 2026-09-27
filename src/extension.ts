@@ -84,9 +84,10 @@ function scopeFrom(value: string | undefined): MemoryScope {
 	return "global";
 }
 
-function track(runtime: KiyosumiRuntime, task: Promise<void>): void {
+function track(runtime: KiyosumiRuntime, label: string, task: Promise<void>): void {
 	const safeTask = task.catch((error: unknown) => {
-		runtime.logger.warn("Kiyosumi background task failed", { error: error instanceof Error ? error.message : String(error) });
+		const details = error instanceof Error ? { error: error.message, stack: error.stack } : { error: String(error) };
+		runtime.logger.warn("Kiyosumi background task failed", { task: label, ...details });
 	});
 	runtime.pending.add(safeTask);
 	void safeTask.finally(() => runtime.pending.delete(safeTask));
@@ -192,96 +193,160 @@ function scheduleFileReindex(runtime: KiyosumiRuntime, ctx: ExtensionContext, fi
 	if (previous) ctx.clearTimer(previous);
 	const timer = ctx.setTimeout(() => {
 		runtime.reindexTimers.delete(absolutePath);
-		track(runtime, reindexFile(runtime, ctx, absolutePath));
+		track(runtime, `file-reindex:${absolutePath}`, reindexFile(runtime, ctx, absolutePath));
 	}, 750);
 	runtime.reindexTimers.set(absolutePath, timer);
 }
 
-async function handleIndexCommand(runtime: KiyosumiRuntime, ctx: ExtensionCommandContext, args: string): Promise<void> {
-	const parts = args.trim().split(/\s+/).filter(Boolean);
-	const targetPath = parts[0] ?? ".";
-	const collection = parts[1] || runtime.rag.projectCollection(ctx.cwd);
-	const replaceCollection = fullWorkspacePath(ctx.cwd, targetPath);
+function commandUsage(): string {
+	return [
+		"Kiyosumi: durable memory and project retrieval.",
+		"/kiyosumi analyze — index this workspace and ask for a read-only overview.",
+		"/kiyosumi index [path] — index the workspace or a subpath.",
+		"/kiyosumi search <query> — search this workspace's indexed passages.",
+		"/kiyosumi memory [list|search <query>|save <text>|delete <key-or-id>]",
+		"/kiyosumi status | /kiyosumi delete-index [collection]",
+	].join("\n");
+}
+
+function analysisPrompt(): string {
+	return [
+		"Analyze this project read-only. Inspect its directory structure and key files, including README, AGENTS.md/CLAUDE.md, manifests, entry points, and configuration.",
+		"Avoid dependency and generated directories such as node_modules, dist, build, target, and .git. Do not edit files.",
+		"Return a concise overview covering purpose, technology stack, organization, build/run/test commands, and notable details.",
+		"Save the final overview using kiyosumi_memory with { action: \"save\", scope: \"project\", key: \"project-overview\", content: <summary> }.",
+	].join("\n");
+}
+
+function parseAction(args: string): { action: string; rest: string } {
+	const trimmed = args.trim();
+	const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+	return match ? { action: match[1]!.toLowerCase(), rest: match[2] ?? "" } : { action: "help", rest: "" };
+}
+
+async function handleProjectIndex(runtime: KiyosumiRuntime, ctx: ExtensionCommandContext, targetPath: string): Promise<IndexSummary> {
+	const collection = runtime.rag.projectCollection(ctx.cwd);
+	return collectAndIndex(runtime, ctx, targetPath || ".", collection, fullWorkspacePath(ctx.cwd, targetPath));
+}
+
+async function handleAnalyze(runtime: KiyosumiRuntime, pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+	const collection = runtime.rag.projectCollection(ctx.cwd);
 	try {
-		const summary = await collectAndIndex(runtime, ctx, targetPath, collection, replaceCollection);
-		ctx.ui.notify(`Indexed ${summary.files} file(s), ${summary.chunks} chunk(s), ${summary.bytes} bytes into ${collection}.`, "info");
+		const summary = await collectAndIndex(runtime, ctx, ".", collection, true);
+		ctx.ui.notify(`Indexed ${summary.files} file(s), ${summary.chunks} chunk(s) into ${collection}.`, "info");
 	} catch (error) {
-		ctx.ui.notify(`Kiyosumi index failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+		ctx.ui.notify(`Project indexing unavailable: ${error instanceof Error ? error.message : String(error)}. Analysis will continue.`, "warning");
 	}
+	pi.sendUserMessage(analysisPrompt());
 }
 
 function registerCommands(pi: ExtensionAPI, runtime: KiyosumiRuntime): void {
-	pi.registerCommand("kiyosumi-memory", {
-		description: "List or search Kiyosumi long-term memory",
+	pi.registerCommand("kiyosumi", {
+		description: "Manage durable Kiyosumi memory and project retrieval",
 		handler: async (args, ctx) => {
-			const query = args.trim();
-			const records = query ? await runtime.store.search(query, 20) : await runtime.store.list(undefined, undefined, 20);
-			ctx.ui.notify(renderMemoryList(records), "info");
-		},
-	});
-	pi.registerCommand("kiyosumi-remember", {
-		description: "Save a durable fact in Kiyosumi memory",
-		handler: async (args, ctx) => {
-			const parsed = parseKeyValue(args);
-			if (!parsed.content) {
-				ctx.ui.notify("Usage: /kiyosumi-remember <text>", "warning");
+			const { action, rest } = parseAction(args);
+			if (action === "help") {
+				ctx.ui.notify(commandUsage(), "info");
 				return;
 			}
-			const record = await saveMemoryInput(runtime.store, "global", memoryContext(ctx), parsed.content, parsed.key, "command");
-			ctx.ui.notify(`Saved ${record.key}.`, "info");
-		},
-	});
-	pi.registerCommand("kiyosumi-forget", {
-		description: "Delete a Kiyosumi memory by key or id",
-		handler: async (args, ctx) => {
-			const key = args.trim();
-			if (!key) {
-				ctx.ui.notify("Usage: /kiyosumi-forget <key-or-id>", "warning");
+			if (action === "analyze") {
+				await handleAnalyze(runtime, pi, ctx);
 				return;
 			}
-			const records = await runtime.store.list(undefined, undefined, 1_000);
-			const record = records.find((item) => item.id === key || item.key === key);
-			if (!record) {
-				ctx.ui.notify(`No memory found for ${key}.`, "warning");
+			if (action === "index") {
+				try {
+					const summary = await handleProjectIndex(runtime, ctx, rest || ".");
+					ctx.ui.notify(`Indexed ${summary.files} file(s), ${summary.chunks} chunk(s), ${summary.bytes} bytes into ${runtime.rag.projectCollection(ctx.cwd)}.`, "info");
+				} catch (error) {
+					ctx.ui.notify(`Kiyosumi index failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
 				return;
 			}
-			await runtime.store.delete(record.id);
-			ctx.ui.notify(`Forgot ${record.key}.`, "info");
-		},
-	});
-	pi.registerCommand("kiyosumi-rag-index", {
-		description: "Index a workspace file or directory for Kiyosumi retrieval",
-		handler: async (args, ctx) => handleIndexCommand(runtime, ctx, args),
-	});
-	pi.registerCommand("kiyosumi-rag-status", {
-		description: "Show Kiyosumi retrieval status",
-		handler: async (_args, ctx) => {
-			const probe = await runtime.rag.probe();
-			const collections = await runtime.rag.collections();
-			const lines = [
-				`Data: ${runtime.config.dataDir}`,
-				`Memory: ${runtime.config.memory.enabled ? "enabled" : "disabled"}`,
-				`RAG: ${runtime.config.rag.enabled ? "enabled" : "disabled"}`,
-				`Provider: ${runtime.config.rag.providerName}`,
-				`Embedding: ${runtime.config.rag.embedding.model} at ${redactEndpoint(runtime.config.rag.embedding.endpoint)}`,
-				`Rerank: ${runtime.config.rag.rerank.model} at ${redactEndpoint(runtime.config.rag.rerank.endpoint)}`,
-				`Embedding key: ${runtime.config.rag.embedding.apiKey ? "configured" : "not configured"}`,
-				`Collections: ${collections.length ? collections.join(", ") : "none"}`,
-				`Provider status: ${probe.detail}`,
-			];
-			ctx.ui.notify(lines.join("\n"), probe.ok ? "info" : "warning");
-		},
-	});
-	pi.registerCommand("kiyosumi-rag-delete", {
-		description: "Delete a Kiyosumi retrieval collection",
-		handler: async (args, ctx) => {
-			const collection = args.trim();
-			if (!collection) {
-				ctx.ui.notify("Usage: /kiyosumi-rag-delete <collection>", "warning");
+			if (action === "search") {
+				if (!rest.trim()) {
+					ctx.ui.notify("Usage: /kiyosumi search <query>", "warning");
+					return;
+				}
+				const collection = runtime.rag.projectCollection(ctx.cwd);
+				try {
+					const hits = await runtime.rag.search({ collection, query: rest });
+					if (hits.length === 0) {
+						ctx.ui.notify(`No passages are indexed in ${collection}. Run /kiyosumi analyze or /kiyosumi index first.`, "info");
+						return;
+					}
+					ctx.ui.notify([`${hits.length} passage(s) from ${collection}:`, ...hits.map((hit, index) => `\n[${index + 1}] ${hit.path || hit.documentId}\n${truncateText(hit.content, 3_000)}`)].join("\n"), "info");
+				} catch (error) {
+					ctx.ui.notify(`Kiyosumi search failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
 				return;
 			}
-			const deleted = await runtime.rag.deleteCollection(collection);
-			ctx.ui.notify(deleted ? `Deleted ${collection}.` : `Collection ${collection} was empty or missing.`, deleted ? "info" : "warning");
+			if (action === "memory") {
+				const nested = parseAction(rest);
+				if (!rest.trim() || nested.action === "list") {
+					ctx.ui.notify(renderMemoryList(await runtime.store.list(undefined, undefined, 200)), "info");
+					return;
+				}
+				if (nested.action === "search") {
+					if (!nested.rest.trim()) {
+						ctx.ui.notify("Usage: /kiyosumi memory search <query>", "warning");
+						return;
+					}
+					ctx.ui.notify(renderMemoryList(await runtime.store.search(nested.rest, 20)), "info");
+					return;
+				}
+				if (nested.action === "save") {
+					const parsed = parseKeyValue(nested.rest);
+					if (!parsed.content) {
+						ctx.ui.notify("Usage: /kiyosumi memory save <text>", "warning");
+						return;
+					}
+					const record = await saveMemoryInput(runtime.store, "global", memoryContext(ctx), parsed.content, parsed.key, "command");
+					ctx.ui.notify(`Saved ${record.key}.`, "info");
+					return;
+				}
+				if (nested.action === "delete") {
+					const key = nested.rest.trim();
+					if (!key) {
+						ctx.ui.notify("Usage: /kiyosumi memory delete <key-or-id>", "warning");
+						return;
+					}
+					const records = await runtime.store.list(undefined, undefined, 1_000);
+					const record = records.find((item) => item.id === key || item.key === key);
+					if (!record) {
+						ctx.ui.notify(`No memory found for ${key}.`, "warning");
+						return;
+					}
+					await runtime.store.delete(record.id);
+					ctx.ui.notify(`Forgot ${record.key}.`, "info");
+					return;
+				}
+				ctx.ui.notify("Usage: /kiyosumi memory [list|search <query>|save <text>|delete <key-or-id>]", "warning");
+				return;
+			}
+			if (action === "status") {
+				const probe = await runtime.rag.probe();
+				const collections = await runtime.rag.collections();
+				const lines = [
+					`Data: ${runtime.config.dataDir}`,
+					`Memory: ${runtime.config.memory.enabled ? "enabled" : "disabled"}`,
+					`RAG: ${runtime.config.rag.enabled ? "enabled" : "disabled"}`,
+					`Provider: ${runtime.config.rag.providerName}`,
+					`Embedding: ${runtime.config.rag.embedding.model} at ${redactEndpoint(runtime.config.rag.embedding.endpoint)}`,
+					`Rerank: ${runtime.config.rag.rerank.model} at ${redactEndpoint(runtime.config.rag.rerank.endpoint)}`,
+					`Embedding key: ${runtime.config.rag.embedding.apiKey ? "configured" : "not configured"}`,
+					`Collections: ${collections.length ? collections.join(", ") : "none"}`,
+					`Provider status: ${probe.detail}`,
+				];
+				ctx.ui.notify(lines.join("\n"), probe.ok ? "info" : "warning");
+				return;
+			}
+			if (action === "delete-index") {
+				const collection = rest.trim() || runtime.rag.projectCollection(ctx.cwd);
+				const deleted = await runtime.rag.deleteCollection(collection);
+				ctx.ui.notify(deleted ? `Deleted ${collection}.` : `Collection ${collection} was empty or missing.`, deleted ? "info" : "warning");
+				return;
+			}
+			ctx.ui.notify(commandUsage(), "warning");
 		},
 	});
 }
@@ -355,12 +420,6 @@ function registerTools(pi: ExtensionAPI, runtime: KiyosumiRuntime): void {
 }
 
 function registerEvents(pi: ExtensionAPI, runtime: KiyosumiRuntime): void {
-	pi.on("session_start", (_event, ctx) => {
-		if (runtime.shuttingDown || !runtime.config.rag.autoIndexProject || !runtime.rag.configured) return;
-		const details = contextDetails(ctx);
-		if (runtime.indexedProjects.has(details.projectRoot)) return;
-		track(runtime, collectAndIndex(runtime, ctx, ".", runtime.rag.projectCollection(details.projectRoot), true).then(() => undefined));
-	});
 	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx) => {
 		if (runtime.shuttingDown) return undefined;
 		const blocks: string[] = [];
@@ -398,7 +457,7 @@ function registerEvents(pi: ExtensionAPI, runtime: KiyosumiRuntime): void {
 		if (!exchange.user && !exchange.assistant) return;
 		const details = contextDetails(ctx);
 		const document = runtime.rag.conversationDocument(details.sessionId, exchange.user, exchange.assistant, ctx.sessionManager.getSessionName());
-		track(runtime, runtime.rag.index({ collection: CONVERSATION_COLLECTION, documents: [document] }).then(() => undefined));
+		track(runtime, `conversation-index:${details.sessionId}`, runtime.rag.index({ collection: CONVERSATION_COLLECTION, documents: [document] }).then(() => undefined));
 	});
 	pi.on("tool_result", (event: ToolResultEvent, ctx) => {
 		if (event.isError || (event.toolName !== "write" && event.toolName !== "edit")) return;

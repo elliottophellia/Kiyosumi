@@ -68,7 +68,7 @@ export function renderMemoryPrompt(records: readonly MemoryRecord[]): string {
 }
 
 export function renderMemoryList(records: readonly MemoryRecord[]): string {
-	if (records.length === 0) return "No memories stored yet. Add one with `/remember <text>`.";
+	if (records.length === 0) return "No memories stored yet. Add one with `/kiyosumi memory save <text>`.";
 	const lines = records.map((record) => {
 		const firstLine = record.content.split("\n", 1)[0] ?? record.content;
 		return `- \`${record.key}\` (${record.scope}): ${firstLine}`;

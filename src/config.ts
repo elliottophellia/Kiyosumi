@@ -21,7 +21,6 @@ export interface KiyosumiConfig {
 		rerankEnabled: boolean;
 		dedupe: boolean;
 		autoContext: boolean;
-		autoIndexProject: boolean;
 		requestTimeoutMs: number;
 		contextTimeoutMs: number;
 		contextMaxChars: number;
@@ -154,7 +153,6 @@ export function loadConfig(env: Env = process.env): KiyosumiConfig {
 			rerankEnabled: boolEnv(env, "KIYOSUMI_RERANK", true),
 			dedupe: boolEnv(env, "KIYOSUMI_DEDUPE", true),
 			autoContext: boolEnv(env, "KIYOSUMI_AUTO_CONTEXT", true),
-			autoIndexProject: boolEnv(env, "KIYOSUMI_AUTO_INDEX", false),
 			requestTimeoutMs: intEnv(env, "KIYOSUMI_REQUEST_TIMEOUT_MS", DEFAULTS.requestTimeoutMs, 1_000, 600_000),
 			contextTimeoutMs: intEnv(env, "KIYOSUMI_CONTEXT_TIMEOUT_MS", DEFAULTS.contextTimeoutMs, 500, 120_000),
 			contextMaxChars: intEnv(env, "KIYOSUMI_CONTEXT_MAX_CHARS", DEFAULTS.contextMaxChars, 500, 100_000),
