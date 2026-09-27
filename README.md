@@ -98,13 +98,16 @@ Kiyosumi reads configuration from the environment when the extension loads.
 | `KIYOSUMI_TOP_K` | `8` | Maximum passages returned to the model |
 | `KIYOSUMI_MEMORY_ENABLED` | `1` | Enable durable memory tools and prompt injection |
 | `KIYOSUMI_MEMORY_CHAR_LIMIT` | `12000` | Maximum memory block size in characters |
-| `KIYOSUMI_AUTO_CONTEXT` | `1` | Index finished exchanges and retrieve prior context |
-| `KIYOSUMI_AUTO_INDEX` | `0` | Index the whole workspace after session start |
+| `KIYOSUMI_AUTO_CONTEXT` | `1` | Index completed conversation exchanges and inject relevant saved/project/conversation context |
 | `KIYOSUMI_CONTEXT_MAX_CHARS` | `4000` | Retrieved context budget per turn |
 | `KIYOSUMI_CONTEXT_MAX_PASSAGES` | `6` | Retrieved passages per turn |
 | `KIYOSUMI_MAX_FILE_BYTES` | `2097152` | Largest file considered for indexing |
 | `KIYOSUMI_MAX_FILES` | `3000` | Largest workspace file count per index operation |
 | `KIYOSUMI_MAX_INDEX_BYTES` | `67108864` | Largest total text size per index operation |
+
+Project files are **not** scanned automatically at session start. Run `/kiyosumi analyze` to request a bounded workspace index and a read-only project analysis. Analysis is still sent if indexing fails or no embedding provider is configured. The resulting project overview should be saved through `kiyosumi_memory` as project memory with key `project-overview`.
+
+`KIYOSUMI_AUTO_INDEX` is no longer supported. Use `/kiyosumi index` or `/kiyosumi analyze` to explicitly index project source.
 
 Boolean variables accept `1`, `0`, `true`, `false`, `yes`, `no`, `on`, and `off`.
 
@@ -115,17 +118,31 @@ Without `KIYOSUMI_DATA_DIR`, the PGlite data directory follows the active Oh My 
 ### Tools
 
 - `kiyosumi_memory` saves, searches, lists, or deletes durable facts.
-- `kiyosumi_rag_search` searches a collection with configured embeddings, PostgreSQL full-text search, reciprocal-rank fusion, and optional reranking.
-- `kiyosumi_rag_index` indexes a file or directory inside the current workspace.
+- `kiyosumi_rag_search` searches the current project collection by default; advanced calls may select a collection.
+- `kiyosumi_rag_index` indexes a file or directory inside the current workspace; advanced calls may select a collection and include glob.
 
-### Commands
+### Command
 
-- `/kiyosumi-memory [query]` lists or searches memory.
-- `/kiyosumi-remember <text>` stores a global fact. Use `key: value` for a stable key.
-- `/kiyosumi-forget <key-or-id>` removes one memory.
-- `/kiyosumi-rag-index [path] [collection]` indexes a workspace path.
-- `/kiyosumi-rag-status` shows the PGlite path, redacted endpoints, models, collections, and provider health.
-- `/kiyosumi-rag-delete <collection>` removes a collection and its vectors.
+All human slash actions use `/kiyosumi`; the project collection is inferred from the current workspace.
+
+```text
+/kiyosumi help
+/kiyosumi analyze
+/kiyosumi index [path]
+/kiyosumi search <query>
+/kiyosumi memory [list]
+/kiyosumi memory search <query>
+/kiyosumi memory save <text>
+/kiyosumi memory delete <key-or-id>
+/kiyosumi status
+/kiyosumi delete-index [collection]
+```
+
+`index` defaults to the whole workspace. Re-indexing the whole workspace replaces only its project collection. Indexing a subpath updates those documents and leaves unrelated indexed files intact. `search` reports how to index when the current project collection has no matching passages. `memory save` accepts `key: value` to retain the stable-key upsert behavior. `delete-index` defaults to the current project collection; an optional named collection is allowed only for this destructive action.
+
+`analyze` attempts a bounded full-workspace index, then asks the agent to inspect key project files without making edits and summarize purpose, stack, organization, build/run/test, and notable details. If the provider is missing or indexing fails, the analysis prompt is still delivered. The overview is requested as project memory `project-overview`.
+
+There are no separate `/kiyosumi-memory`, `/kiyosumi-remember`, `/kiyosumi-forget`, or `-rag-*` slash commands. The namespaced agent tools remain available for advanced use.
 
 ## Retrieval pipeline
 
@@ -141,7 +158,7 @@ A search uses these stages:
 6. The configured rerank endpoint reorders candidates when enabled.
 7. Exact trimmed-content deduplication runs before the `top_k` limit.
 
-Conversation exchanges are stored in the `kiyosumi-conversations` collection when automatic context is enabled. Automatic project indexing is opt-in because it reads source files and sends their text to the configured provider.
+Completed conversation exchanges are stored in `kiyosumi-conversations` when `KIYOSUMI_AUTO_CONTEXT=1`. Project source is only indexed through explicit `/kiyosumi index` or `/kiyosumi analyze` actions; no session-start project scan occurs.
 
 ## Storage and safety
 

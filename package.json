@@ -1,6 +1,6 @@
 {
   "name": "@elliottophellia/kiyosumi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Provider-agnostic long-term memory and retrieval for Oh My Pi",
   "license": "GPL-2.0-only",
   "author": "elliottophellia",
