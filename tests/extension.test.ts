@@ -205,12 +205,44 @@ describe("Kiyosumi extension lifecycle", () => {
 			const movedWorkspace = `${workspace}-moved`;
 			await rename(workspace, movedWorkspace);
 			await command("analyze", ctx);
+			expect(String(notifications.at(-1)).includes("Project indexing unavailable:")).toBe(true);
 			expect(String(messages.at(-1)).includes("read-only")).toBe(true);
 			await rename(movedWorkspace, workspace);
 			await handlers.get("session_shutdown")!({ type: "session_shutdown" } as never, ctx as never);
 		} finally {
 			server.stop(true);
 			for (const [key, value] of Object.entries({ KIYOSUMI_DATA_DIR: previous.data, KIYOSUMI_EMBEDDING_ENDPOINT: previous.endpoint, KIYOSUMI_EMBEDDING_API_STYLE: previous.style, KIYOSUMI_RERANK_ENDPOINT: previous.rerank, KIYOSUMI_RERANK: previous.rerankEnabled, KIYOSUMI_RAG_ENABLED: previous.ragEnabled, KIYOSUMI_EMBED_DIMENSIONS: previous.dimensions, KIYOSUMI_AUTO_CONTEXT: previous.autoContext, VOYAGE_API_KEY: previous.voyage })) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			await rm(dataDir, { recursive: true, force: true });
+			await rm(workspace, { recursive: true, force: true });
+		}
+	});
+	test.serial("analyze still sends its prompt without an embedding provider", async () => {
+		const dataDir = await mkdtemp(join(tmpdir(), "kiyosumi-no-provider-data-"));
+		const workspace = await mkdtemp(join(tmpdir(), "kiyosumi-no-provider-project-"));
+		await Bun.write(join(workspace, "README.md"), "Provider-free analysis fixture content.");
+		const previous = { data: process.env.KIYOSUMI_DATA_DIR, endpoint: process.env.KIYOSUMI_EMBEDDING_ENDPOINT, key: process.env.KIYOSUMI_EMBEDDING_API_KEY, voyage: process.env.VOYAGE_API_KEY, autoContext: process.env.KIYOSUMI_AUTO_CONTEXT };
+		process.env.KIYOSUMI_DATA_DIR = dataDir;
+		delete process.env.KIYOSUMI_EMBEDDING_ENDPOINT;
+		delete process.env.KIYOSUMI_EMBEDDING_API_KEY;
+		delete process.env.VOYAGE_API_KEY;
+		process.env.KIYOSUMI_AUTO_CONTEXT = "0";
+		const handlers = new Map<string, (...args: never[]) => unknown>();
+		const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void }>();
+		const notifications: string[] = [];
+		const messages: string[] = [];
+		const pi = { setLabel: () => undefined, zod: { object: schema, string: schema, number: schema, enum: schema }, logger: { warn: () => undefined, debug: () => undefined }, on: (event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler), registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void }) => commands.set(name, options), registerTool: () => undefined, sendUserMessage: (message: string) => messages.push(message) } as unknown as ExtensionAPI;
+		const ctx = { cwd: workspace, sessionManager: { getSessionId: () => "no-provider", getSessionName: () => "No provider" }, ui: { notify: (message: string) => notifications.push(message) } } as unknown as ExtensionContext;
+		try {
+			await kiyosumiExtension(pi);
+			await commands.get("kiyosumi")!.handler("analyze", ctx);
+			expect(String(notifications.at(-1)).includes("Project indexing unavailable:")).toBe(true);
+			expect(String(messages.at(-1)).includes("read-only")).toBe(true);
+			await handlers.get("session_shutdown")!({ type: "session_shutdown" } as never, ctx as never);
+		} finally {
+			for (const [key, value] of Object.entries({ KIYOSUMI_DATA_DIR: previous.data, KIYOSUMI_EMBEDDING_ENDPOINT: previous.endpoint, KIYOSUMI_EMBEDDING_API_KEY: previous.key, VOYAGE_API_KEY: previous.voyage, KIYOSUMI_AUTO_CONTEXT: previous.autoContext })) {
 				if (value === undefined) delete process.env[key];
 				else process.env[key] = value;
 			}
